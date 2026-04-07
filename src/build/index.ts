@@ -188,7 +188,8 @@ export function routeToFunctionName(route: string): string {
       .replace(/^\//, '')
       .replace(/\{([^}]+)\}/g, '$1')
       .replace(/\//g, '-')
-      .replace(/[^a-zA-Z0-9-]/g, '') || 'root'
+      .replace(/[^a-zA-Z0-9-]/g, '')
+      .toLowerCase() || 'root'
   );
 }
 
