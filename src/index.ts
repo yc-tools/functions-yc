@@ -207,7 +207,6 @@ program
       );
       await terraform.init(backend || undefined);
 
-      // 3. Upload
       const resolvedAccessKey = accessKey ?? '';
       const resolvedSecretKey = secretKey ?? '';
 
@@ -217,28 +216,6 @@ program
         );
       }
 
-      // Try to get existing bucket from terraform state, fall back to CLI/config
-      let deployBucket = first(opts.bucket as string | undefined, config.deployBucketName);
-      if (!deployBucket) {
-        try {
-          const outputs = await terraform.readOutputs();
-          deployBucket = extractOutputString(outputs, 'deploy_bucket');
-        } catch {
-          // no state yet — bucket will be created by terraform
-        }
-      }
-
-      const uploader = new Uploader();
-      await uploader.upload({
-        outputDir,
-        manifest,
-        bucket: deployBucket ?? `${(appName ?? path.basename(projectPath)).toLowerCase()}-${environment}-deploy`,
-        accessKey: resolvedAccessKey,
-        secretKey: resolvedSecretKey,
-        verbose: opts.verbose as boolean | undefined,
-      });
-
-      // 4. Terraform apply
       const tfVarEnv: NodeJS.ProcessEnv = {
         ...process.env,
         TF_VAR_manifest_path: path.join(outputDir, 'functions.manifest.json'),
@@ -252,9 +229,47 @@ program
       if (iamToken) tfVarEnv['TF_VAR_iam_token'] = iamToken;
       if (resolvedAccessKey) tfVarEnv['TF_VAR_storage_access_key'] = resolvedAccessKey;
       if (resolvedSecretKey) tfVarEnv['TF_VAR_storage_secret_key'] = resolvedSecretKey;
-      if (deployBucket) tfVarEnv['TF_VAR_deploy_bucket_name'] = deployBucket;
       if (domainName) tfVarEnv['TF_VAR_domain_name'] = domainName;
 
+      // 3. Ensure deploy bucket exists before uploading artifacts
+      let deployBucket = first(opts.bucket as string | undefined, config.deployBucketName);
+      if (!deployBucket) {
+        try {
+          const outputs = await terraform.readOutputs(tfVarEnv);
+          deployBucket = extractOutputString(outputs, 'deploy_bucket');
+        } catch {
+          // no state yet
+        }
+      }
+
+      if (!deployBucket) {
+        // First deploy: create the bucket before uploading
+        await terraform.apply({
+          autoApprove,
+          env: tfVarEnv,
+          targets: ['yandex_storage_bucket.deploy'],
+        });
+        const outputs = await terraform.readOutputs(tfVarEnv);
+        deployBucket = extractOutputString(outputs, 'deploy_bucket');
+      }
+
+      const resolvedBucket =
+        deployBucket ??
+        `${(appName ?? path.basename(projectPath)).toLowerCase()}-${environment}-deploy`;
+      tfVarEnv['TF_VAR_deploy_bucket_name'] = resolvedBucket;
+
+      // 4. Upload artifacts
+      const uploader = new Uploader();
+      await uploader.upload({
+        outputDir,
+        manifest,
+        bucket: resolvedBucket,
+        accessKey: resolvedAccessKey,
+        secretKey: resolvedSecretKey,
+        verbose: opts.verbose as boolean | undefined,
+      });
+
+      // 5. Full terraform apply
       await terraform.apply({ autoApprove, env: tfVarEnv });
 
       // Print outputs
