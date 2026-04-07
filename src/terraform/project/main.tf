@@ -61,11 +61,6 @@ resource "yandex_function" "fn" {
 
   environment = try(each.value.env, { NODE_ENV = "production" })
 
-  log_options {
-    disabled  = false
-    min_level = "WARN"
-  }
-
   depends_on = [yandex_storage_bucket.deploy]
 }
 
