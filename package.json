@@ -46,6 +46,13 @@
     "@types/node": "^20.0.0",
     "typescript": "^5.3.3"
   },
+  "keywords": [
+    "yandex-cloud",
+    "serverless",
+    "functions",
+    "deploy",
+    "terraform"
+  ],
   "engines": {
     "node": ">=20.0.0"
   }
