@@ -1,0 +1,120 @@
+name: Publish
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 20
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write  # required for npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update npm (trusted publishing requires >=11.5.1)
+        run: npm install -g npm@latest
+
+      - name: Detect releasable changes
+        id: changes
+        shell: bash
+        run: |
+          BEFORE_SHA="${{ github.event.before }}"
+          AFTER_SHA="${{ github.sha }}"
+
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BEFORE_SHA="$(git rev-list --max-parents=0 HEAD)"
+          fi
+
+          CHANGED_FILES="$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")"
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          if echo "$CHANGED_FILES" | grep -Eq '^(src/|package\.json|tsconfig\.json)'; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip release for non-code changes
+        if: steps.changes.outputs.should_release != 'true'
+        run: echo "No releasable changes detected. Skipping publish/release."
+
+      - name: Install dependencies
+        if: steps.changes.outputs.should_release == 'true'
+        run: npm install --no-package-lock
+
+      - name: Build
+        if: steps.changes.outputs.should_release == 'true'
+        run: npm run build
+
+      - name: Determine next version
+        if: steps.changes.outputs.should_release == 'true'
+        id: version
+        shell: bash
+        run: |
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          LATEST_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+
+          if [ -n "$LATEST_TAG" ]; then
+            BASE_VERSION="${LATEST_TAG#v}"
+            if [[ ! "$BASE_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "Unsupported release tag version: $LATEST_TAG"
+              exit 1
+            fi
+            NEXT_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
+          else
+            NEXT_VERSION="$PACKAGE_VERSION"
+          fi
+
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Selected release version: $NEXT_VERSION"
+
+      - name: Publish @yc-tools/functions-yc
+        if: steps.changes.outputs.should_release == 'true'
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
+          PACKAGE_NAME="@yc-tools/functions-yc"
+          if npm view "$PACKAGE_NAME@$VERSION" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
+            echo "$PACKAGE_NAME@$VERSION already exists in npm, skipping publish"
+          else
+            npm version "$VERSION" --no-git-tag-version --allow-same-version
+            npm publish --access public --tag latest --provenance
+          fi
+
+      - name: Create GitHub Release
+        if: steps.changes.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ steps.version.outputs.version }}"
+          if gh release view "$VERSION" > /dev/null 2>&1; then
+            echo "Release $VERSION already exists, skipping"
+          else
+            {
+              echo "## Release $VERSION"
+              echo
+              echo "### Packages Published"
+              echo "- \`@yc-tools/functions-yc@${{ steps.version.outputs.version }}\`"
+            } > release-notes.md
+            gh release create "$VERSION" \
+              --title "Release $VERSION" \
+              --notes-file release-notes.md
+          fi

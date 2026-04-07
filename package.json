@@ -1,0 +1,52 @@
+{
+  "name": "@yc-tools/functions-yc",
+  "version": "1.0.0",
+  "description": "CLI tool for deploying TypeScript functions to Yandex Cloud",
+  "license": "MIT",
+  "author": "yc-tools Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yc-tools/functions-yc.git"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public",
+    "provenance": true
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "functions-yc": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc && cp -r src/terraform/project dist/terraform/project && chmod +x dist/index.js",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.490.0",
+    "@aws-sdk/lib-storage": "^3.490.0",
+    "archiver": "^6.0.1",
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "esbuild": "^0.19.11",
+    "fs-extra": "^11.2.0",
+    "glob": "^11.0.1",
+    "ora": "^8.0.1"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.2",
+    "@types/fs-extra": "^11.0.4",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
