@@ -50,7 +50,7 @@ variable "zone" {
 variable "nodejs_version" {
   description = "Node.js runtime version for Cloud Functions"
   type        = string
-  default     = "nodejs20"
+  default     = "nodejs18"
 
   validation {
     condition     = contains(["nodejs18", "nodejs20", "nodejs22"], var.nodejs_version)

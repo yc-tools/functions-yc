@@ -228,7 +228,7 @@ program
       opts.nodejsVersion ? (opts.nodejsVersion as string) : undefined,
       e('FYC_NODEJS_VERSION'),
       config.nodejsVersion,
-      'nodejs20',
+      'nodejs18',
     )!;
 
     const environment = first(
