@@ -47,6 +47,7 @@ interface FycConfig {
   autoApprove?: boolean;
   deployBucketName?: string;
   tfVars?: Record<string, string | number | boolean>;
+  functionEnv?: Record<string, string>;
 }
 
 async function loadConfig(projectPath: string): Promise<FycConfig> {
@@ -78,6 +79,18 @@ function collectTfVarsFromEnv(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (k.startsWith(prefix) && v !== undefined) {
       result[k.slice(prefix.length).toLowerCase()] = v;
+    }
+  }
+  return result;
+}
+
+/** Collect FYC_FN_ENV_<KEY> env vars → { KEY: value } (keys keep original case) */
+function collectFunctionEnvFromEnv(): Record<string, string> {
+  const prefix = 'FYC_FN_ENV_';
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith(prefix) && v !== undefined) {
+      result[k.slice(prefix.length)] = v;
     }
   }
   return result;
@@ -140,6 +153,7 @@ program
         externalPackages: collectExternalPackages(opts.external as string[], config),
         memory: opts.memory ? parseInt(opts.memory as string, 10) : config.memory,
         timeout: opts.timeout ? parseInt(opts.timeout as string, 10) : config.timeout,
+        functionEnv: { ...config.functionEnv, ...collectFunctionEnvFromEnv() },
         verbose: opts.verbose as boolean | undefined,
       });
 
@@ -267,6 +281,7 @@ program
         externalPackages: collectExternalPackages(opts.external as string[], config),
         memory: opts.memory ? parseInt(opts.memory as string, 10) : config.memory,
         timeout: opts.timeout ? parseInt(opts.timeout as string, 10) : config.timeout,
+        functionEnv: { ...config.functionEnv, ...collectFunctionEnvFromEnv() },
         verbose: opts.verbose as boolean | undefined,
       });
 

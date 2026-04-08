@@ -33,6 +33,7 @@ export interface BuildOptions {
   externalPackages?: string[];
   memory?: number;
   timeout?: number;
+  functionEnv?: Record<string, string>;
   verbose?: boolean;
 }
 
@@ -45,6 +46,7 @@ export class Builder {
       externalPackages = [],
       memory = 256,
       timeout = 30,
+      functionEnv = {},
       verbose,
     } = options;
 
@@ -119,7 +121,7 @@ export class Builder {
           params,
           memory,
           timeout,
-          env: { NODE_ENV: 'production' },
+          env: { NODE_ENV: 'production', ...functionEnv },
         });
 
         spinner.succeed(`Built ${name} → ${route}`);
