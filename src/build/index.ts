@@ -196,11 +196,25 @@ export function routeToFunctionName(route: string): string {
 function generateWrapper(entryAbsolutePath: string): string {
   const escaped = JSON.stringify(entryAbsolutePath);
   return `'use strict';
-const _mod = require(${escaped});
-const _handler = _mod.handler || _mod.default?.handler;
+let _handler;
+try {
+  const _mod = require(${escaped});
+  _handler = _mod.handler || _mod.default?.handler;
+  if (typeof _handler !== 'function') {
+    throw new Error('No exported handler function found in module');
+  }
+} catch (initErr) {
+  console.error('[functions-yc] Module init error:', initErr);
+  _handler = async () => ({ statusCode: 500, body: 'Internal Server Error: module init failed' });
+}
 exports.handler = async (event, context) => {
   event.params = event.pathParameters || {};
-  return _handler(event, context);
+  try {
+    return await _handler(event, context);
+  } catch (err) {
+    console.error('[functions-yc] Handler error:', err);
+    return { statusCode: 500, body: 'Internal Server Error' };
+  }
 };
 `;
 }

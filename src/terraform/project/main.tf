@@ -50,7 +50,7 @@ resource "yandex_function" "fn" {
   memory            = try(each.value.memory, var.function_memory)
   execution_timeout = tostring(try(each.value.timeout, var.function_timeout))
 
-  user_hash = each.value.zipPath
+  user_hash = "${local.manifest.buildId}-${each.key}"
 
   package {
     bucket_name = yandex_storage_bucket.deploy.bucket
