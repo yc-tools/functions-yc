@@ -1,6 +1,6 @@
 {
   "name": "@yc-tools/functions-yc",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "CLI tool for deploying TypeScript functions to Yandex Cloud",
   "license": "MIT",
   "author": "yc-tools Contributors",
