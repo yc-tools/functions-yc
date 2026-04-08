@@ -38,9 +38,15 @@ interface FycConfig {
   stateKey?: string;
   nodejsVersion?: string;
   domainName?: string;
+  dnsZoneId?: string;
+  certificateId?: string;
+  createDnsZone?: boolean;
+  zone?: string;
+  region?: string;
   env?: string;
   autoApprove?: boolean;
   deployBucketName?: string;
+  tfVars?: Record<string, string | number | boolean>;
 }
 
 async function loadConfig(projectPath: string): Promise<FycConfig> {
@@ -63,6 +69,41 @@ function collectExternalPackages(cliValues: string[], config: FycConfig): string
   if (cliValues.length > 0) return cliValues;
   if (Array.isArray(config.externalPackages)) return config.externalPackages as string[];
   return [];
+}
+
+/** Collect FYC_TF_VAR_<key> env vars → { key: value } */
+function collectTfVarsFromEnv(): Record<string, string> {
+  const prefix = 'FYC_TF_VAR_';
+  const result: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith(prefix) && v !== undefined) {
+      result[k.slice(prefix.length).toLowerCase()] = v;
+    }
+  }
+  return result;
+}
+
+/** Collect config.tfVars → { key: value } */
+function collectTfVarsFromConfig(config: FycConfig): Record<string, string> {
+  if (!config.tfVars) return {};
+  return Object.fromEntries(
+    Object.entries(config.tfVars).map(([k, v]) => [
+      k.replace(/-/g, '_'),
+      String(v),
+    ]),
+  );
+}
+
+/** Parse --tf-var key=value assignments from CLI */
+function parseTfVarAssignments(assignments: string[]): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const assignment of assignments) {
+    const idx = assignment.indexOf('=');
+    if (idx < 1) throw new Error(`--tf-var: expected key=value, got: ${assignment}`);
+    const key = assignment.slice(0, idx).replace(/-/g, '_');
+    result[key] = assignment.slice(idx + 1);
+  }
+  return result;
 }
 
 // ── build ─────────────────────────────────────────────────────────────────────
@@ -142,7 +183,18 @@ program
   .option('--state-key <key>', 'Terraform S3 state key')
   .option('--nodejs-version <ver>', 'Node.js version (nodejs18/nodejs20/nodejs22)', '')
   .option('--domain <name>', 'Custom domain name')
+  .option('--dns-zone-id <id>', 'Existing DNS zone ID')
+  .option('--certificate-id <id>', 'Existing TLS certificate ID')
+  .option('--create-dns-zone', 'Create a new DNS zone for the domain')
+  .option('--zone <zone>', 'Yandex Cloud availability zone')
+  .option('--region <region>', 'Yandex Cloud region')
   .option('--env <env>', 'Environment (dev/staging/production)', '')
+  .option(
+    '--tf-var <key=value>',
+    'Extra terraform variable (repeatable)',
+    (v: string, acc: string[]) => { acc.push(v); return acc; },
+    [] as string[],
+  )
   .option('--auto-approve', 'Run terraform with -auto-approve')
   .option('-v, --verbose', 'Verbose output')
   .action(async (opts) => {
@@ -150,33 +202,57 @@ program
     const outputDir = path.resolve(opts.output as string);
     const config = await loadConfig(projectPath);
 
-    const cloudId = first(opts.cloudId as string | undefined, e('FYC_CLOUD_ID'), config.cloudId);
-    const folderId = first(opts.folderId as string | undefined, e('FYC_FOLDER_ID'), config.folderId);
-    const iamToken = first(opts.iamToken as string | undefined, e('FYC_IAM_TOKEN'), config.iamToken);
-    const accessKey = first(opts.accessKey as string | undefined, e('FYC_STORAGE_ACCESS_KEY'), config.storageAccessKey);
-    const secretKey = first(opts.secretKey as string | undefined, e('FYC_STORAGE_SECRET_KEY'), config.storageSecretKey);
-    const stateBucket = first(opts.stateBucket as string | undefined, e('FYC_STATE_BUCKET'), config.stateBucket);
-    const stateKey = first(opts.stateKey as string | undefined, e('FYC_STATE_KEY'), config.stateKey);
-    const appName = first(opts.appName as string | undefined, e('FYC_APP_NAME'), config.appName);
+    // ── Resolve all options: CLI → env var → config ──────────────────────────
+
+    const cloudId      = first(opts.cloudId as string | undefined,      e('FYC_CLOUD_ID'),              config.cloudId);
+    const folderId     = first(opts.folderId as string | undefined,     e('FYC_FOLDER_ID'),             config.folderId);
+    const iamToken     = first(opts.iamToken as string | undefined,     e('FYC_IAM_TOKEN'),             config.iamToken);
+    const accessKey    = first(opts.accessKey as string | undefined,    e('FYC_STORAGE_ACCESS_KEY'),    config.storageAccessKey);
+    const secretKey    = first(opts.secretKey as string | undefined,    e('FYC_STORAGE_SECRET_KEY'),    config.storageSecretKey);
+    const stateBucket  = first(opts.stateBucket as string | undefined,  e('FYC_STATE_BUCKET'),          config.stateBucket);
+    const stateKey     = first(opts.stateKey as string | undefined,     e('FYC_STATE_KEY'),             config.stateKey);
+    const appName      = first(opts.appName as string | undefined,      e('FYC_APP_NAME'),              config.appName);
+    const domainName   = first(opts.domain as string | undefined,       e('FYC_DOMAIN_NAME'),           config.domainName);
+    const dnsZoneId    = first(opts.dnsZoneId as string | undefined,    e('FYC_DNS_ZONE_ID'),           config.dnsZoneId);
+    const certificateId = first(opts.certificateId as string | undefined, e('FYC_CERTIFICATE_ID'),      config.certificateId);
+    const zone         = first(opts.zone as string | undefined,         e('FYC_ZONE'),                  config.zone);
+    const region       = first(opts.region as string | undefined,       e('FYC_REGION'),                config.region);
+
+    const createDnsZone =
+      (opts.createDnsZone as boolean | undefined) ||
+      e('FYC_CREATE_DNS_ZONE') === 'true' ||
+      config.createDnsZone ||
+      false;
+
     const nodejsVersion = first(
       opts.nodejsVersion ? (opts.nodejsVersion as string) : undefined,
+      e('FYC_NODEJS_VERSION'),
       config.nodejsVersion,
       'nodejs20',
-    );
+    )!;
+
     const environment = first(
       opts.env ? (opts.env as string) : undefined,
+      e('FYC_ENV'),
       config.env,
       'production',
-    );
+    )!;
+
     const autoApprove =
       (opts.autoApprove as boolean | undefined) ||
       e('FYC_AUTO_APPROVE') === 'true' ||
       config.autoApprove ||
       false;
-    const domainName = first(
-      opts.domain as string | undefined,
-      config.domainName,
-    );
+
+    // ── Custom terraform vars: config → env → CLI (later wins) ───────────────
+
+    const extraTfVars: Record<string, string> = {
+      ...collectTfVarsFromConfig(config),
+      ...collectTfVarsFromEnv(),
+      ...parseTfVarAssignments(opts.tfVar as string[]),
+    };
+
+    // ── Deploy ────────────────────────────────────────────────────────────────
 
     const terraformDir = await prepareTerraformProject();
 
@@ -200,7 +276,7 @@ program
         { stateBucket, stateKey },
         {
           ...process.env,
-          YC_REGION: 'ru-central1',
+          YC_REGION: region ?? 'ru-central1',
           YC_ACCESS_KEY: accessKey,
           YC_SECRET_KEY: secretKey,
         },
@@ -222,14 +298,23 @@ program
         TF_VAR_app_name: appName ?? path.basename(projectPath).toLowerCase().replace(/[^a-z0-9-]/g, '-'),
         TF_VAR_env: environment,
         TF_VAR_nodejs_version: nodejsVersion,
+        // Extra terraform vars (FYC_TF_VAR_* / config.tfVars / --tf-var)
+        ...Object.fromEntries(
+          Object.entries(extraTfVars).map(([k, v]) => [`TF_VAR_${k}`, v]),
+        ),
       };
 
-      if (cloudId) tfVarEnv['TF_VAR_cloud_id'] = cloudId;
-      if (folderId) tfVarEnv['TF_VAR_folder_id'] = folderId;
-      if (iamToken) tfVarEnv['TF_VAR_iam_token'] = iamToken;
+      if (cloudId)          tfVarEnv['TF_VAR_cloud_id']          = cloudId;
+      if (folderId)         tfVarEnv['TF_VAR_folder_id']         = folderId;
+      if (iamToken)         tfVarEnv['TF_VAR_iam_token']         = iamToken;
       if (resolvedAccessKey) tfVarEnv['TF_VAR_storage_access_key'] = resolvedAccessKey;
       if (resolvedSecretKey) tfVarEnv['TF_VAR_storage_secret_key'] = resolvedSecretKey;
-      if (domainName) tfVarEnv['TF_VAR_domain_name'] = domainName;
+      if (domainName)       tfVarEnv['TF_VAR_domain_name']       = domainName;
+      if (dnsZoneId)        tfVarEnv['TF_VAR_dns_zone_id']       = dnsZoneId;
+      if (certificateId)    tfVarEnv['TF_VAR_certificate_id']    = certificateId;
+      if (zone)             tfVarEnv['TF_VAR_zone']              = zone;
+      if (region)           tfVarEnv['TF_VAR_region']            = region;
+      tfVarEnv['TF_VAR_create_dns_zone'] = String(createDnsZone);
 
       // 3. Ensure deploy bucket exists before uploading artifacts
       let deployBucket = first(opts.bucket as string | undefined, config.deployBucketName);
