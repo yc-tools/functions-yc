@@ -105,6 +105,7 @@ export class TerraformRunner {
 
   async init(backend?: TerraformBackendConfig, env?: NodeJS.ProcessEnv): Promise<void> {
     const args = ['init'];
+    let runEnv = env;
 
     if (backend) {
       args.push(`-backend-config=bucket=${backend.bucket}`);
@@ -115,11 +116,16 @@ export class TerraformRunner {
       args.push('-backend-config=skip_credentials_validation=true');
       args.push('-backend-config=skip_metadata_api_check=true');
       args.push('-backend-config=skip_requesting_account_id=true');
-      args.push(`-backend-config=access_key=${backend.accessKey}`);
-      args.push(`-backend-config=secret_key=${backend.secretKey}`);
+      // Credentials go through env vars (terraform's S3 backend reads these),
+      // not argv, so they never show up in `ps` output.
+      runEnv = {
+        ...env,
+        AWS_ACCESS_KEY_ID: backend.accessKey,
+        AWS_SECRET_ACCESS_KEY: backend.secretKey,
+      };
     }
 
-    await this.run(args, { env });
+    await this.run(args, { env: runEnv });
   }
 
   async apply(options: TerraformApplyOptions = {}): Promise<void> {
@@ -172,7 +178,9 @@ export class TerraformRunner {
       const child = spawn(this.terraformBin, args, {
         cwd: this.terraformDir,
         env: { ...process.env, ...options.env },
-        stdio: 'pipe',
+        // Inherit stdin for interactive commands (e.g. `terraform apply`
+        // approval prompt); a piped stdin would make the prompt hang forever.
+        stdio: [captureOutput ? 'ignore' : 'inherit', 'pipe', 'pipe'],
       });
 
       let stdout = '';

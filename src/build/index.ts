@@ -64,12 +64,18 @@ export class Builder {
     }
 
     spinner.start('Scanning handlers...');
-    const handlerFiles = await glob('**/*.ts', { cwd: handlersAbsDir, absolute: false });
+    const handlerFiles = await glob('**/*.ts', {
+      cwd: handlersAbsDir,
+      absolute: false,
+      ignore: ['**/*.d.ts', '**/_*', '**/_*/**'],
+    });
 
     if (handlerFiles.length === 0) {
       throw new Error(`No .ts files found in: ${handlersAbsDir}`);
     }
     spinner.succeed(`Found ${handlerFiles.length} handler(s)`);
+    handlerFiles.sort();
+    assertNoCollisions(handlerFiles);
 
     // Build each handler
     const functions: FunctionEntry[] = [];
@@ -77,7 +83,7 @@ export class Builder {
     await fs.ensureDir(tempDir);
 
     try {
-      for (const relFile of handlerFiles.sort()) {
+      for (const relFile of handlerFiles) {
         const route = filePathToRoute(relFile);
         const params = extractRouteParams(route);
         const name = routeToFunctionName(route);
@@ -145,6 +151,36 @@ export class Builder {
     }
 
     return manifest;
+  }
+}
+
+/**
+ * Fail fast when two handler files map to the same route or function name
+ * (e.g. `foo.ts` vs `foo/index.ts` → same route; `/a-b` vs `/a/b` → same name).
+ */
+function assertNoCollisions(handlerFiles: string[]): void {
+  const byRoute = new Map<string, string>();
+  const byName = new Map<string, string>();
+
+  for (const relFile of handlerFiles) {
+    const route = filePathToRoute(relFile);
+    const name = routeToFunctionName(route);
+
+    const routeOwner = byRoute.get(route);
+    if (routeOwner) {
+      throw new Error(
+        `Route collision: "${routeOwner}" and "${relFile}" both map to route "${route}". Rename or remove one of them.`,
+      );
+    }
+    byRoute.set(route, relFile);
+
+    const nameOwner = byName.get(name);
+    if (nameOwner) {
+      throw new Error(
+        `Function name collision: "${nameOwner}" and "${relFile}" both map to function name "${name}". Rename or remove one of them.`,
+      );
+    }
+    byName.set(name, relFile);
   }
 }
 
@@ -230,10 +266,11 @@ async function zipFile(sourcePath: string, destZip: string, entryName: string): 
     const output = fs.createWriteStream(destZip);
     const archive = archiver('zip', { zlib: { level: 9 } });
     output.on('close', resolve);
+    output.on('error', reject);
     archive.on('error', reject);
     archive.pipe(output);
     archive.file(sourcePath, { name: entryName });
-    void archive.finalize();
+    archive.finalize().catch(reject);
   });
 }
 
@@ -243,10 +280,18 @@ async function zipBundleWithNodeModules(
   externals: string[],
   destZip: string,
 ): Promise<void> {
+  for (const pkg of externals) {
+    const pkgDir = path.join(projectPath, 'node_modules', pkg);
+    if (!(await fs.pathExists(pkgDir))) {
+      throw new Error(`External package "${pkg}" not found in node_modules: ${pkgDir}`);
+    }
+  }
+
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(destZip);
     const archive = archiver('zip', { zlib: { level: 9 } });
     output.on('close', resolve);
+    output.on('error', reject);
     archive.on('error', reject);
     archive.pipe(output);
     archive.file(bundlePath, { name: 'index.js' });
@@ -254,6 +299,6 @@ async function zipBundleWithNodeModules(
       const pkgDir = path.join(projectPath, 'node_modules', pkg);
       archive.directory(pkgDir, `node_modules/${pkg}`);
     }
-    void archive.finalize();
+    archive.finalize().catch(reject);
   });
 }
