@@ -59,7 +59,7 @@ jobs:
 
       - name: Install dependencies
         if: steps.changes.outputs.should_release == 'true'
-        run: npm install --no-package-lock
+        run: npm ci
 
       - name: Build
         if: steps.changes.outputs.should_release == 'true'
