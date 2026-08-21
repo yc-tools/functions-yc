@@ -15,6 +15,7 @@ import {
   resolveBackendConfig,
   TerraformRunner,
 } from './terraform/index.js';
+import { collectFunctionEnvFromEnv } from './function-env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = fs.readJsonSync(path.join(__dirname, '..', 'package.json')) as {
@@ -96,18 +97,6 @@ function collectTfVarsFromEnv(): Record<string, string> {
   for (const [k, v] of Object.entries(process.env)) {
     if (k.startsWith(prefix) && v !== undefined) {
       result[k.slice(prefix.length).toLowerCase()] = v;
-    }
-  }
-  return result;
-}
-
-/** Collect FYC_FN_ENV_<KEY> env vars → { KEY: value } (keys keep original case) */
-function collectFunctionEnvFromEnv(): Record<string, string> {
-  const prefix = 'FYC_FN_ENV_';
-  const result: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (k.startsWith(prefix) && v !== undefined) {
-      result[k.slice(prefix.length)] = v;
     }
   }
   return result;
