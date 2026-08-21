@@ -98,6 +98,14 @@ export async function cleanupTerraformProject(terraformDir: string): Promise<voi
 }
 
 export class TerraformRunner {
+  /**
+   * Backend credentials, kept for the lifetime of the runner. The S3 backend
+   * needs them on every state-touching command (apply, output, plan), not just
+   * init — passing them via -backend-config used to persist them into
+   * .terraform, but env vars have to be supplied each time.
+   */
+  private backendEnv: NodeJS.ProcessEnv = {};
+
   constructor(
     private readonly terraformDir: string,
     private readonly terraformBin: string = 'terraform',
@@ -118,11 +126,11 @@ export class TerraformRunner {
       args.push('-backend-config=skip_requesting_account_id=true');
       // Credentials go through env vars (terraform's S3 backend reads these),
       // not argv, so they never show up in `ps` output.
-      runEnv = {
-        ...env,
+      this.backendEnv = {
         AWS_ACCESS_KEY_ID: backend.accessKey,
         AWS_SECRET_ACCESS_KEY: backend.secretKey,
       };
+      runEnv = { ...env, ...this.backendEnv };
     }
 
     await this.run(args, { env: runEnv });
@@ -178,7 +186,7 @@ export class TerraformRunner {
     return new Promise((resolve, reject) => {
       const child = spawn(this.terraformBin, args, {
         cwd: this.terraformDir,
-        env: { ...process.env, ...options.env },
+        env: { ...process.env, ...this.backendEnv, ...options.env },
         // Inherit stdin for interactive commands (e.g. `terraform apply`
         // approval prompt); a piped stdin would make the prompt hang forever.
         stdio: [captureOutput ? 'ignore' : 'inherit', 'pipe', 'pipe'],
