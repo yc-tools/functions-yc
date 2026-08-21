@@ -147,7 +147,8 @@ export class TerraformRunner {
       args.push(`-replace=${replaceTarget}`);
     }
 
-    await this.run(args, { env: options.env });
+    const { stdout } = await this.run(args, { env: options.env });
+    assertVersionsWerePublished(stdout);
   }
 
   async readOutputs(env?: NodeJS.ProcessEnv): Promise<Record<string, TerraformOutputEntry>> {
@@ -212,4 +213,26 @@ export class TerraformRunner {
       });
     });
   }
+}
+
+/**
+ * The Yandex provider downgrades a failed function-version creation to a
+ * warning and lets `terraform apply` exit 0 — so a deploy reports success
+ * while the functions keep running their previous code. Surface it as the
+ * failure it is, rather than letting CI go green on a no-op.
+ */
+export function assertVersionsWerePublished(applyOutput: string): void {
+  if (!/Failed to create version for Yandex Cloud Function/i.test(applyOutput)) return;
+
+  const detail = applyOutput
+    .split('\n')
+    .map((line) => line.replace(/\u001b\[[0-9;]*m/g, '').replace(/^\s*[│|]\s*/, '').trim())
+    .find((line) => /Illegal value|InvalidArgument|rpc error/i.test(line));
+
+  throw new Error(
+    'Terraform reported success but Yandex Cloud refused to create a new function version, ' +
+      'so this deploy published nothing and the functions still run their previous code.' +
+      (detail ? `\n  ${detail}` : '') +
+      '\n  A common cause is an empty environment variable value, which Yandex Cloud rejects.',
+  );
 }
