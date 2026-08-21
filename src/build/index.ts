@@ -1,5 +1,6 @@
 import fs from 'fs-extra';
 import path from 'path';
+import { createRequire } from 'module';
 import archiver from 'archiver';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -280,12 +281,7 @@ async function zipBundleWithNodeModules(
   externals: string[],
   destZip: string,
 ): Promise<void> {
-  for (const pkg of externals) {
-    const pkgDir = path.join(projectPath, 'node_modules', pkg);
-    if (!(await fs.pathExists(pkgDir))) {
-      throw new Error(`External package "${pkg}" not found in node_modules: ${pkgDir}`);
-    }
-  }
+  const closure = collectPackageClosure(externals, projectPath);
 
   await new Promise<void>((resolve, reject) => {
     const output = fs.createWriteStream(destZip);
@@ -295,10 +291,115 @@ async function zipBundleWithNodeModules(
     archive.on('error', reject);
     archive.pipe(output);
     archive.file(bundlePath, { name: 'index.js' });
-    for (const pkg of externals) {
-      const pkgDir = path.join(projectPath, 'node_modules', pkg);
-      archive.directory(pkgDir, `node_modules/${pkg}`);
+    for (const [name, dir] of closure) {
+      archive.directory(dir, `node_modules/${name}`);
     }
     archive.finalize().catch(reject);
   });
+}
+
+/**
+ * Resolve each external package *and everything it requires at runtime*.
+ *
+ * Shipping only the named packages leaves the function with a top-level
+ * dependency whose own imports are missing, and it fails at the first
+ * `require` — as a MODULE_NOT_FOUND from inside node_modules, far from
+ * anything the author wrote. Node's resolver is used so both npm's hoisted
+ * layout and pnpm's `.pnpm` symlink farm work; the result is flattened into a
+ * single node_modules directory, which is what the function runtime expects.
+ */
+export function collectPackageClosure(
+  externals: string[],
+  projectPath: string,
+): Map<string, string> {
+  const require = createRequire(path.join(projectPath, 'package.json'));
+  const resolved = new Map<string, string>();
+  const queue: Array<{ name: string; from: string }> = externals.map((name) => ({
+    name,
+    from: projectPath,
+  }));
+
+  while (queue.length > 0) {
+    const { name, from } = queue.shift()!;
+    const dir = resolvePackageDir(require, name, from);
+
+    if (!dir) {
+      // A named external that cannot be found is a configuration error; a
+      // missing transitive dependency is usually an unmet optional one.
+      if (externals.includes(name)) {
+        throw new Error(`External package "${name}" not found in node_modules under ${projectPath}`);
+      }
+      continue;
+    }
+
+    const existing = resolved.get(name);
+    if (existing) {
+      if (existing !== dir) {
+        console.warn(
+          `Two versions of "${name}" are required (${existing} and ${dir}); bundling the first. ` +
+            'Flattening cannot represent both.',
+        );
+      }
+      continue;
+    }
+    resolved.set(name, dir);
+
+    for (const dep of readRuntimeDependencies(dir)) {
+      if (!resolved.has(dep)) queue.push({ name: dep, from: dir });
+    }
+  }
+
+  return resolved;
+}
+
+function resolvePackageDir(
+  require: NodeJS.Require,
+  name: string,
+  fromDir: string,
+): string | null {
+  try {
+    return realpath(path.dirname(require.resolve(`${name}/package.json`, { paths: [fromDir] })));
+  } catch {
+    // Packages with an "exports" map may refuse to expose package.json, so
+    // fall back to walking node_modules the way Node itself would.
+  }
+
+  let dir = fromDir;
+  for (;;) {
+    const candidate = path.join(dir, 'node_modules', name);
+    if (fs.pathExistsSync(path.join(candidate, 'package.json'))) return realpath(candidate);
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/**
+ * Resolve symlinks before looking further. pnpm links every dependency into a
+ * `.pnpm` store, and a package's own dependencies are siblings inside that
+ * store — invisible if the search starts from the link in the project's
+ * node_modules.
+ */
+function realpath(dir: string): string {
+  try {
+    return fs.realpathSync(dir);
+  } catch {
+    return dir;
+  }
+}
+
+/** dependencies plus any optionalDependencies that are actually installed. */
+function readRuntimeDependencies(pkgDir: string): string[] {
+  try {
+    const manifest = fs.readJsonSync(path.join(pkgDir, 'package.json')) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+    return [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.optionalDependencies ?? {}),
+    ];
+  } catch {
+    return [];
+  }
 }
