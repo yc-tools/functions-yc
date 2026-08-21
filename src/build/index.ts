@@ -388,16 +388,28 @@ function realpath(dir: string): string {
   }
 }
 
-/** dependencies plus any optionalDependencies that are actually installed. */
+/**
+ * Everything a package may require at runtime: dependencies, plus optional and
+ * peer dependencies when they are actually installed.
+ *
+ * Peers matter because a library commonly reaches into one lazily — ydb-sdk
+ * requires '@yandex-cloud/nodejs-sdk/dist/token-service/metadata-token-service'
+ * only when metadata auth is used, so omitting installed peers produces a
+ * function that starts fine and fails on the first authenticated call.
+ * Unresolvable entries are dropped later, so listing a peer the consumer chose
+ * not to install costs nothing.
+ */
 function readRuntimeDependencies(pkgDir: string): string[] {
   try {
     const manifest = fs.readJsonSync(path.join(pkgDir, 'package.json')) as {
       dependencies?: Record<string, string>;
       optionalDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
     };
     return [
       ...Object.keys(manifest.dependencies ?? {}),
       ...Object.keys(manifest.optionalDependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
     ];
   } catch {
     return [];
